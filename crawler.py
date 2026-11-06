@@ -11,6 +11,8 @@
 
 import argparse
 import csv
+import json
+import os
 import sys
 import time
 from datetime import date
@@ -24,6 +26,7 @@ MAX_PAGES = 5          # 合规：只采前 5 页
 SLEEP_SECONDS = 1.5    # 合规：每次请求后休息 1.5 秒
 TIMEOUT = 10
 FIELDS = ["text", "author", "author_url", "tags", "page"]
+STATE_FILE = "state.json"  # 断点续爬进度文件
 # 合规：自报身份的 UA。注意：HTTP 头只允许 ASCII，不能出现中文
 HEADERS = {"User-Agent": "VibeCodingCourse/1.0 (student project; contact: 1871134843@qq.com)"}
 
@@ -116,6 +119,38 @@ def save_csv(rows):
     return filename
 
 
+def state_path():
+    return STATE_FILE
+
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def save_state(completed_pages, row_count, last_text_preview, done=False):
+    state = {
+        "done": done,
+        "completed_pages": sorted(set(completed_pages)),
+        "row_count": row_count,
+        "last_text_preview": last_text_preview,
+    }
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def load_csv_rows():
+    """续爬时读回已有 CSV 数据（避免重采已完成页）。"""
+    filename = f"data_quotes_{date.today():%Y%m%d}.csv"
+    if not os.path.exists(filename):
+        return [], filename
+    with open(filename, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    return rows, filename
+
+
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # 防止 Windows 控制台编码报错
@@ -123,6 +158,8 @@ def main():
     parser = argparse.ArgumentParser(description="quotes.toscrape.com 合规爬虫")
     parser.add_argument("--full", action="store_true",
                         help="全量模式：翻页采集前 5 页（默认仅第 1 页前 5 条供人工核对）")
+    parser.add_argument("--fresh", action="store_true",
+                        help="忽略断点从零开始（删除 state.json 和已采 CSV）")
     args = parser.parse_args()
 
     session = requests.Session()
@@ -138,15 +175,44 @@ def main():
             failed_pages.append(1)
             print("第 1 页重试后仍失败，无数据。")
     else:
-        print("== 全量模式：采集前 5 页 ==")
-        url, page = BASE_URL + "/", 1
+        # --- 断点续爬入口 ---
+        if args.fresh:
+            if os.path.exists(STATE_FILE):
+                os.remove(STATE_FILE)
+            old_csv = f"data_quotes_{date.today():%Y%m%d}.csv"
+            if os.path.exists(old_csv):
+                os.remove(old_csv)
+            print("== 全量模式：--fresh 从零开始 ==")
+            completed_pages = []
+        else:
+            state = load_state()
+            if state and state.get("done"):
+                print(f"✅ state.json 标记已完成（{state['row_count']} 条），无需重跑。加 --fresh 强制重采。")
+                report_stats()
+                sys.exit(0)
+            rows, _ = load_csv_rows()  # 读回已有 CSV，防续爬时重采
+            completed_pages = state.get("completed_pages", []) if state else []
+            if completed_pages:
+                next_page = max(completed_pages) + 1
+                print(f"== 全量模式：从第 {next_page} 页续爬（已完成 {completed_pages}，已采 {len(rows)} 条） ==")
+            else:
+                print("== 全量模式：采集前 5 页 ==")
+
+        # --- 翻页采集（核心逻辑不变，仅外层加状态读写） ---
+        start_page = max(completed_pages, default=0) + 1
+        page = start_page
+        url = BASE_URL + "/" if page == 1 else f"{BASE_URL}/page/{page}/"
         while url and page <= MAX_PAGES:
             print(f"[第 {page}/{MAX_PAGES} 页] {url}")
             html = fetch(session, url)
             if html:
                 page_rows = parse_quotes(html, page)
                 rows.extend(page_rows)
-                print(f"  ✓ 当页 +{len(page_rows)} 条，累计 {len(rows)} 条")
+                completed_pages.append(page)
+                preview = page_rows[-1]["text"][:50] if page_rows else ""
+                save_state(completed_pages, len(rows), preview, done=False)
+                save_csv(rows)  # 中间产物同步落盘，防强杀丢数据
+                print(f"  ✓ 当页 +{len(page_rows)} 条，累计 {len(rows)} 条（state 已更新）")
                 nxt = next_page_url(html)
             else:
                 print(f"  ✗ 第 {page} 页重试后仍失败，记录页码并跳过。")
@@ -154,6 +220,12 @@ def main():
                 nxt = f"{BASE_URL}/page/{page + 1}/"  # 按站点规律跳到下一页
             page += 1
             url = nxt if page <= MAX_PAGES else None
+
+        # --- 全部完成：写 done 标记 ---
+        if page > MAX_PAGES:
+            preview = rows[-1]["text"][:50] if rows else ""
+            save_state(completed_pages, len(rows), preview, done=True)
+            print(f"\n✅ 全部 {MAX_PAGES} 页采完，state.json 已标记 done=true")
 
     if rows:
         filename = save_csv(rows)
