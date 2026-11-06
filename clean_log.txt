@@ -1,0 +1,29 @@
+=== 数据清洗开始 ===
+输入：data_quotes_20261106.csv
+输出：data_quotes_clean_20261106.csv
+
+[读取] 50 行，字段：['text', 'author', 'author_url', 'tags', 'page']
+
+[Step1 去重] 处理前 50 行 -> 处理后 50 行，删除 0 行
+
+[Step2 补空] 处理前 50 行 -> 处理后 50 行
+             author 补空 0 条，tags 补空 2 条
+
+[Step3 统一格式] 处理前 50 行 -> 处理后 50 行
+                 text 规范化 0 条，author_url 补绝对地址 0 条
+
+[Step4 极值校验] 样本数 50
+--- 各列非空率 ---
+  text        : 50/50  (100.0%)
+  author      : 50/50  (100.0%)
+  author_url  : 50/50  (100.0%)
+  tags        : 50/50  (100.0%)
+  page        : 50/50  (100.0%)
+
+--- text 长度统计 ---
+  min = 34  max = 1084  avg = 125.9
+
+--- 人工确认：无 text 长度 <5 的行，全部正常 ---
+
+[完成] 已保存清洗结果 -> data_quotes_clean_20261106.csv（utf-8-sig）
+       清洗日志 -> clean_log.txt
