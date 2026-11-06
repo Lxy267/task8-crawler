@@ -141,13 +141,15 @@ def main():
         print("== 全量模式：采集前 5 页 ==")
         url, page = BASE_URL + "/", 1
         while url and page <= MAX_PAGES:
-            print(f"[第 {page} 页] {url}")
+            print(f"[第 {page}/{MAX_PAGES} 页] {url}")
             html = fetch(session, url)
             if html:
-                rows.extend(parse_quotes(html, page))
+                page_rows = parse_quotes(html, page)
+                rows.extend(page_rows)
+                print(f"  ✓ 当页 +{len(page_rows)} 条，累计 {len(rows)} 条")
                 nxt = next_page_url(html)
             else:
-                print(f"  第 {page} 页重试后仍失败，记录页码并跳过。")
+                print(f"  ✗ 第 {page} 页重试后仍失败，记录页码并跳过。")
                 failed_pages.append(page)
                 nxt = f"{BASE_URL}/page/{page + 1}/"  # 按站点规律跳到下一页
             page += 1
