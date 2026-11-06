@@ -40,6 +40,138 @@ def report_stats():
     print(f"\n总请求数：{total_requests}，总耗时：{time.time() - START:.1f} 秒")
 
 
+def generate_report(rows):
+    """基于已采集数据生成 Markdown 格式的数据质量报告 report.md。"""
+    elapsed = time.time() - START
+    total = len(rows)
+
+    # 字段完整率
+    completeness_rows = []
+    for col in FIELDS:
+        non_empty = sum(1 for r in rows if str(r.get(col, "")).strip() != "")
+        pct = (non_empty / total * 100) if total else 0
+        completeness_rows.append(f"| {col:12s} | {non_empty}/{total} | {pct:.1f}% |")
+
+    # 去重条数
+    unique_texts = set(str(r.get("text", "")).strip() for r in rows)
+    deduped = len(unique_texts)
+    dup_deleted = total - deduped
+
+    # 极值（按 text 长度）
+    text_items = [(len(str(r.get("text", "")).strip()), r) for r in rows if str(r.get("text", "")).strip()]
+    if text_items:
+        longest = max(text_items, key=lambda x: x[0])
+        shortest = min(text_items, key=lambda x: x[0])
+    else:
+        longest = shortest = (0, {})
+
+    # 可疑值：text 长度 < 10
+    suspicious = [r for r in rows if len(str(r.get("text", "")).strip()) < 10]
+
+    # 各字段极值：page（转 int 后 min/max）、tags 最多的那条、author 出现次数 Top3
+    def to_int_page(r):
+        try:
+            return int(r.get("page") or 0)
+        except ValueError:
+            return 0
+
+    pages = [to_int_page(r) for r in rows]
+    page_min, page_max = (min(pages), max(pages)) if pages else (0, 0)
+
+    # author 频次 Top3
+    from collections import Counter
+    author_counts = Counter((r.get("author") or "").strip() for r in rows if (r.get("author") or "").strip())
+    author_top3 = author_counts.most_common(3)
+
+    # tags 最多的那条
+    def tag_count(r):
+        t = (r.get("tags") or "").strip()
+        return len(t.split("|")) if t else 0
+    most_tags_row = max(rows, key=tag_count) if rows else {}
+
+    lines = [
+        "# 数据质量报告",
+        "",
+        f"生成时间：{date.today():%Y-%m-%d}  ",
+        f"数据源：{f'data_quotes_{date.today():%Y%m%d}.csv'}  ",
+        f"生成方式：`python crawler.py --full` 自动产出",
+        "",
+        "## 一、采集概况",
+        "",
+        f"| 指标 | 数值 |",
+        f"|------|------|",
+        f"| 采集总条数 | {total} |",
+        f"| 去重后条数 | {deduped}（删除 {dup_deleted} 条） |",
+        f"| 爬虫总请求数 | {total_requests} |",
+        f"| 爬虫总耗时 | {elapsed:.1f} 秒 |",
+        f"| 采集页码范围 | 第 {page_min} ~ {page_max} 页 |",
+        "",
+        "## 二、字段完整率",
+        "",
+        "| 字段 | 非空数/总数 | 完整率 |",
+        "|------|------------|--------|",
+        *completeness_rows,
+        "",
+        "## 三、去重统计",
+        "",
+        f"- 去重规则：按 `text`（名言全文）唯一键，保留首条",
+        f"- 原始条数：**{total}** 条 → 去重后：**{deduped}** 条（删除 {dup_deleted} 条）",
+        "",
+        "## 四、字段极值与可疑值",
+        "",
+        "### 4.1 text（名言）极值",
+        "",
+        f"- 最长名言：{longest[0]} 字",
+        f"  > {(longest[1].get('text','')[:120] + ('...' if longest[0] > 120 else ''))}",
+        f"- 最短名言：{shortest[0]} 字",
+        f"  > {shortest[1].get('text','')!r}",
+        "",
+        "### 4.2 author（作者）出现频次 Top3",
+        "",
+        "| 排名 | 作者 | 条数 |",
+        "|------|------|------|",
+    ]
+    for i, (name, cnt) in enumerate(author_top3, 1):
+        lines.append(f"| {i} | {name} | {cnt} |")
+
+    lines.extend([
+        "",
+        "### 4.3 tags 最多的一条",
+        "",
+        f"- 标签数：{tag_count(most_tags_row)} 个",
+        f"- 内容：{(most_tags_row.get('text','')[:120] + ('...' if most_tags_row.get('text','') and len(most_tags_row['text']) > 120 else ''))}",
+        f"- 标签：{most_tags_row.get('tags','')}",
+        "",
+        "### 4.4 可疑值清单（text 长度 < 10 字）",
+        "",
+    ])
+    if suspicious:
+        lines.append(f"共 {len(suspicious)} 条，建议人工核对：")
+        lines.append("")
+        for i, r in enumerate(suspicious, 1):
+            lines.append(f"{i}. text={r.get('text','')!r}  author={r.get('author','')}  page={r.get('page','')}")
+    else:
+        lines.append("无，全部 text 长度 ≥ 10 字。")
+
+    lines.extend([
+        "",
+        "## 五、这份数据适合回答什么问题",
+        "",
+        "1. **哪位作者在网站上出现频率最高？** —— 可按 `author` 聚合计数，得到 Top N 高频作者排行。",
+        "2. **各标签的分布如何？哪些主题最流行？** —— 拆解 `tags` 字段，按标签聚合即可得到主题热度排名。",
+        "3. **最长/最短的名言有哪些？各作者的平均名言长度差异？** —— 按 `text` 长度做极值与分组统计。",
+        "4. **5 页内的名言在不同页面上的分布是否均匀？** —— 按 `page` 分组看每页条数，判断采集是否均衡。",
+        "5. **某一位作者的所有名言列表？** —— 直接按 `author` 过滤即可，适合做作者专题合集。",
+        "6. **某一标签下都有哪些作者提到过？** —— 反查 `tags` 包含某个值的行，聚合 `author` 列。",
+        "",
+    ])
+
+    content = "\n".join(lines)
+    with open("report.md", "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"📄 数据质量报告已生成 -> report.md")
+
+
 def fetch(session, url):
     """请求一个页面：失败重试 1 次；403 立即终止；两次均失败返回 None。"""
     global total_requests
@@ -187,7 +319,10 @@ def main():
         else:
             state = load_state()
             if state and state.get("done"):
-                print(f"✅ state.json 标记已完成（{state['row_count']} 条），无需重跑。加 --fresh 强制重采。")
+                history_rows, _ = load_csv_rows()
+                if history_rows:
+                    generate_report(history_rows)
+                print(f"\n✅ state.json 标记已完成（{state['row_count']} 条），无需重跑。加 --fresh 强制重采。")
                 report_stats()
                 sys.exit(0)
             rows, _ = load_csv_rows()  # 读回已有 CSV，防续爬时重采
@@ -233,6 +368,7 @@ def main():
         print(f"\n已保存 {len(rows)} 条记录 -> {filename}（utf-8-sig）")
         print("校验通过：无空 text 字段。" if empty_text == 0
               else f"[警告] 存在 {empty_text} 条空 text 字段，请检查解析规则！")
+        generate_report(rows)
     else:
         print("\n未采集到数据，未生成 CSV。")
 
